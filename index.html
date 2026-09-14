@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GridWorld RL Lab — 值迭代 vs Q-learning</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#fff; --ink:#1c2330; --muted:#6b7686; --line:#e3e7ee;
+    --accent:#2456e6; --goal:#1d9a5b; --trap:#c2452f; --wall:#3b4557; --agent:#e0912a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+    font:14px/1.55 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    padding:20px;max-width:1060px;margin:0 auto}
+  h1{font-size:20px;letter-spacing:.5px}
+  h1 .tag{font-size:11px;color:var(--accent);border:1px solid var(--accent);
+    border-radius:10px;padding:1px 8px;margin-left:8px;vertical-align:3px}
+  .sub{color:var(--muted);font-size:12px;margin:4px 0 16px}
+  .layout{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .ctrl{width:262px;display:flex;flex-direction:column;gap:11px}
+  .ctrl label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  select,button{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line);
+    border-radius:6px;background:#fff;color:var(--ink)}
+  .row{display:flex;gap:8px}
+  button{cursor:pointer;font-weight:600}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.ghost{background:#fff}
+  button:disabled{opacity:.45;cursor:default}
+  .stat{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);
+    border-top:1px dashed var(--line);padding-top:7px}
+  .stat b{color:var(--ink);font-variant-numeric:tabular-nums}
+  #board{border:1px solid var(--line);border-radius:8px}
+  #curve{border:1px solid var(--line);border-radius:8px;background:#fff}
+  .viz{display:flex;flex-direction:column;gap:10px;flex:1;min-width:500px}
+  .legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+  .how{font-size:12px;color:var(--muted);line-height:1.7}
+  .how code{background:#eef1f6;border-radius:4px;padding:0 4px}
+  .foot{margin-top:16px;font-size:11px;color:#9aa4b2;text-align:center}
+</style>
+</head>
+<body>
+  <h1>GridWorld RL Lab<span class="tag">零依赖 · 手写贝尔曼方程</span></h1>
+  <div class="sub">同一个网格世界，两种算法同台：<b>值迭代</b>用贝尔曼最优方程直接解出 V\*，<b>Q-learning</b> 靠试错逼近同一个解。看策略箭头怎么从乱指，慢慢对齐到最优路径。</div>
+
+  <div class="layout">
+    <div class="panel ctrl">
+      <div>
+        <label>迷宫</label>
+        <select id="mazeSel">
+          <option value="7">7 × 7</option>
+          <option value="9" selected>9 × 9</option>
+          <option value="13">13 × 13</option>
+        </select>
+      </div>
+      <div>
+        <label>算法</label>
+        <select id="algSel">
+          <option value="q">Q-learning（试错）</option>
+          <option value="vi">值迭代（解析最优）</option>
+        </select>
+      </div>
+      <div>
+        <label>学习率 α</label>
+        <select id="aSel">
+          <option value="0.1">0.1</option>
+          <option value="0.3" selected>0.3</option>
+          <option value="0.6">0.6</option>
+        </select>
+      </div>
+      <div>
+        <label>探索率 ε（退火 1 → 0.05）</label>
+        <select id="eSel">
+          <option value="0.6">慢退火</option>
+          <option value="0.3" selected>标准</option>
+          <option value="0.1">贪心为主</option>
+        </select>
+      </div>
+      <div>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--ink)">
+          <input type="checkbox" id="rsChk" checked style="width:auto">
+          随机起点（否则只有起点附近能收敛）
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--ink);margin-top:6px">
+          <input type="checkbox" id="optChk" checked style="width:auto">
+          乐观初始化（Q 初值 = 1，避免动作被饿死）
+        </label>
+      </div>
+      <div class="row">
+        <button class="primary" id="btnRun">开始训练</button>
+        <button class="ghost" id="btnPause" disabled>暂停</button>
+      </div>
+      <button class="ghost" id="btnNew">换一个迷宫</button>
+      <button class="ghost" id="btnDemo">跟着智能体走一趟</button>
+      <div class="stat"><span>episode / iter</span><b id="stEp">0</b></div>
+      <div class="stat"><span>与 V\* 的最大差距</span><b id="stGap">—</b></div>
+      <div class="stat"><span>贪心路径长度</span><b id="stLen">—</b></div>
+      <div class="stat"><span>平均回报（近 50 局）</span><b id="stRet">—</b></div>
+      <div class="how">
+        奖励：终点 <code>+1</code>，陷阱 <code>−1</code>，每步 <code>−0.04</code>，折扣 γ=0.95。
+        每步惩罚让最优策略倾向于最短路径 —— 也能看出 Q-learning 是否真的收敛到了最优，而不只是"能到终点"。
+      </div>
+    </div>
+
+    <div class="viz">
+      <div class="panel">
+        <div class="legend" style="margin-bottom:8px">
+          <span><span class="sw" style="background:#3b4557"></span>墙</span>
+          <span><span class="sw" style="background:#1d9a5b"></span>终点</span>
+          <span><span class="sw" style="background:#c2452f"></span>陷阱</span>
+          <span><span class="sw" style="background:#e0912a"></span>智能体</span>
+          <span>底色深浅 = V 值，箭头 = 贪心策略</span>
+        </div>
+        <canvas id="board" width="500" height="500"></canvas>
+      </div>
+      <div class="panel">
+        <div class="legend" style="margin-bottom:6px"><span>每局回报（近 50 局滑动平均）</span></div>
+        <canvas id="curve" width="500" height="110"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">GridWorld RL Lab · 单文件 HTML · 无外部依赖 · 晨星</div>
+
+<script id="engine">
+(function () {
+  var GW = {};
+  var EMPTY = 0, WALL = 1, TRAP = 2;
+  GW.EMPTY = EMPTY; GW.WALL = WALL; GW.TRAP = TRAP;
+  var DIRS = [[0,-1],[1,0],[0,1],[-1,0]]; // up right down left
+  var ARROW = ['↑','→','↓','←'];
+  GW.DIRS = DIRS; GW.ARROW = ARROW;
+
+  GW.rng = function (seed) {
+    var s = seed >>> 0;
+    return function () {
+      s |= 0; s = (s + 0x6D2B79F5) | 0;
+      var t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  // ---------- grid ----------
+  function makeGrid(n, seed) {
+    var rnd = GW.rng(seed);
+    for (var attempt = 0; attempt < 60; attempt++) {
+      var cells = new Uint8Array(n * n);
+      for (var i = 0; i < cells.length; i++) cells[i] = rnd() < 0.18 ? WALL : EMPTY;
+      var start = 0, goal = n * n - 1;
+      cells[start] = EMPTY; cells[goal] = EMPTY;
+      var traps = Math.max(2, Math.round(n * n * 0.05));
+      for (var t = 0; t < traps; t++) {
+        var idx = Math.floor(rnd() * cells.length);
+        if (idx !== start && idx !== goal && cells[idx] === EMPTY) cells[idx] = TRAP;
+      }
+      clearAround(cells, n, start);
+      clearAround(cells, n, goal);
+      var g = { n: n, cells: cells, start: start, goal: goal };
+      if (bfsDist(g, start, goal) >= 0) return g;
+    }
+    return { n: n, cells: new Uint8Array(n * n), start: 0, goal: n * n - 1 }; // empty fallback
+  }
+  function clearAround(cells, n, idx) {
+    var x = idx % n, y = (idx - x) / n;
+    for (var d = 0; d < 4; d++) {
+      var nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+      if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
+      var ni = ny * n + nx;
+      if (ni !== idx && cells[ni] === TRAP) cells[ni] = EMPTY;
+    }
+  }
+  GW.makeGrid = makeGrid;
+
+  function bfsDist(g, from, to) {
+    var n = g.n, dist = new Int32Array(n * n).fill(-1), q = [from];
+    dist[from] = 0;
+    for (var h = 0; h < q.length; h++) {
+      var cur = q[h];
+      if (cur === to) return dist[cur];
+      var x = cur % n, y = (cur - x) / n;
+      for (var d = 0; d < 4; d++) {
+        var nx = x + DIRS[d][0], ny = y + DIRS[d][1];
+        if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
+        var ni = ny * n + nx;
+        if (g.cells[ni] === WALL || dist[ni] >= 0) continue;
+        dist[ni] = dist[cur] + 1; q.push(ni);
+      }
+    }
+    return -1;
+  }
+  GW.bfsDist = bfsDist;
+
+  // transition: returns {ns, r, done}
+  GW.step = function (g, s, a, gamma) {
+    var n = g.n, x = s % n, y = (s - x) / n;
+    var nx = x + DIRS[a][0], ny = y + DIRS[a][1], ns = s;
+    if (!(nx < 0 || ny < 0 || nx >= n || ny >= n) && g.cells[ny * n + nx] !== WALL) ns = ny * n + nx;
+    if (ns === g.goal) return { ns: ns, r: 1, done: true };
+    if (g.cells[ns] === TRAP) return { ns: ns, r: -1, done: true };
+    return { ns: ns, r: -0.04, done: false };
+  };
+
+  // ---------- value iteration (optimal solver) ----------
+  GW.valueIteration = function (g, gamma) {
+    gamma = gamma === undefined ? 0.95 : gamma;
+    var N = g.n * g.n, V = new Float64Array(N), Q = new Float64Array(N * 4);
+    var iter = 0, resid = 1e9, tol = 1e-12;
+    for (; iter < 2000 && resid > tol; iter++) {
+      resid = 0;
+      for (var s = 0; s < N; s++) {
+        if (g.cells[s] === WALL) continue;
+        var best = -Infinity;
+        for (var a = 0; a < 4; a++) {
+          var t = GW.step(g, s, a, gamma);
+          var q = t.r + (t.done ? 0 : gamma * V[t.ns]);
+          Q[s * 4 + a] = q;
+          if (q > best) best = q;
+        }
+        var d = Math.abs(best - V[s]);
+        if (d > resid) resid = d;
+        V[s] = best;
+      }
+    }
+    return { V: V, Q: Q, pi: greedyPolicy(g, Q), iters: iter, residual: resid };
+  };
+
+  function greedyPolicy(g, Q) {
+    var N = g.n * g.n, pi = new Int8Array(N).fill(-1);
+    for (var s = 0; s < N; s++) {
+      if (g.cells[s] === WALL) continue;
+      var best = -Infinity, ba = -1;
+      for (var a = 0; a < 4; a++) {
+        if (Q[s * 4 + a] > best) { best = Q[s * 4 + a]; ba = a; }
+      }
+      pi[s] = ba;
+    }
+    return pi;
+  }
+  GW.greedyPolicy = greedyPolicy;
+
+  // ---------- Q-learning ----------
+  GW.qLearning = function (g, seed, episodes, alpha0, epsDecay, gamma, randomStart, epsFloor, alphaFloorFrac, initQ) {
+    gamma = gamma === undefined ? 0.95 : gamma;
+    alpha0 = alpha0 === undefined ? 0.3 : alpha0;
+    epsDecay = epsDecay === undefined ? 0.3 : epsDecay;
+    randomStart = randomStart === undefined ? true : !!randomStart;
+    // epsFloor: 贪心会"饿死"还没探索过的动作，ε 不能退火到 0
+    epsFloor = epsFloor === undefined ? 0.1 : epsFloor;
+    alphaFloorFrac = alphaFloorFrac === undefined ? 0.2 : alphaFloorFrac;
+    // initQ > 0 = 乐观初始化：所有动作一开始都"看起来很好"，天然避免动作饿死
+    initQ = initQ === undefined ? 1 : initQ;
+    var rnd = GW.rng(seed), N = g.n * g.n;
+    var Q = new Float64Array(N * 4), cnt = new Float64Array(N * 4);
+    if (initQ) Q.fill(initQ);
+    var visits = new Int32Array(N);
+    var returns = [];
+    for (var ep = 0; ep < episodes; ep++) {
+      var s = g.start, ret = 0, eps = epsFloor + (1 - epsFloor) * Math.exp(-ep * epsDecay / 100);
+      if (randomStart && rnd() < 0.5) {
+        // 随机起点：表格型 Q-learning 的收敛需要每个 (s,a) 被无限次访问，
+        // 只从固定起点学，远离起点的区域会被"饿死"（Q 停在 -0.06 附近）。
+        for (var guard = 0; guard < 200; guard++) {
+          var cand = Math.floor(rnd() * N);
+          if (g.cells[cand] !== WALL && cand !== g.goal && g.cells[cand] !== TRAP) { s = cand; break; }
+        }
+      }
+      for (var t = 0; t < 400; t++) {
+        visits[s] += 1;
+        var a;
+        if (rnd() < eps) a = Math.floor(rnd() * 4);
+        else {
+          a = 0;
+          for (var k = 1; k < 4; k++) if (Q[s * 4 + k] > Q[s * 4 + a]) a = k;
+        }
+        var tr = GW.step(g, s, a, gamma);
+        var bestNext = tr.done ? 0 : Math.max(Q[tr.ns * 4], Q[tr.ns * 4 + 1], Q[tr.ns * 4 + 2], Q[tr.ns * 4 + 3]);
+        var ai = s * 4 + a;
+        cnt[ai] += 1;
+        var alpha = Math.max(alpha0 * alphaFloorFrac, Math.min(alpha0, 1 / cnt[ai]));
+        Q[ai] += alpha * (tr.r + gamma * bestNext - Q[ai]);
+        ret += Math.pow(gamma, t) * tr.r;
+        s = tr.ns;
+        if (tr.done) break;
+      }
+      returns.push(ret);
+    }
+    // 注意：终止态（终点/陷阱）不记入 visits —— 它们的 Q 不参与学习，计入会虚高误差
+    return { Q: Q, returns: returns, pi: greedyPolicy(g, Q), visits: visits };
+  };
+
+  // ---------- rollout ----------
+  GW.rollout = function (g, Q, maxSteps) {
+    maxSteps = maxSteps || 200;
+    var path = [g.start], s = g.start;
+    for (var t = 0; t < maxSteps; t++) {
+      var a = 0;
+      for (var k = 1; k < 4; k++) if (Q[s * 4 + k] > Q[s * 4 + a]) a = k;
+      var tr = GW.step(g, s, a);
+      s = tr.ns; path.push(s);
+      if (tr.done) break;
+    }
+    return path;
+  };
+
+  // gap to the optimal value function, measured only over states actually visited
+  GW.gapToStar = function (g, Q, Vstar, visits, minVisits) {
+    minVisits = minVisits === undefined ? 1 : minVisits;
+    var N = g.n * g.n, worst = 0, seen = 0, reach = 0;
+    for (var s = 0; s < N; s++) {
+      if (g.cells[s] === WALL) continue;
+      reach++;
+      if (visits && visits[s] < minVisits) continue;
+      seen++;
+      var vq = Math.max(Q[s * 4], Q[s * 4 + 1], Q[s * 4 + 2], Q[s * 4 + 3]);
+      var d = Math.abs(vq - Vstar[s]);
+      if (d > worst) worst = d;
+    }
+    return { maxGap: worst, visited: seen, reachable: reach, coverage: reach ? seen / reach : 0 };
+  };
+
+  // Bellman residual of a V under greedy wrt Q
+  GW.bellmanResidual = function (g, V, Q, gamma) {
+    gamma = gamma === undefined ? 0.95 : gamma;
+    var N = g.n * g.n, worst = 0;
+    for (var s = 0; s < N; s++) {
+      if (g.cells[s] === WALL) continue;
+      var best = -Infinity;
+      for (var a = 0; a < 4; a++) {
+        var t = GW.step(g, s, a, gamma);
+        var q = t.r + (t.done ? 0 : gamma * V[t.ns]);
+        if (q > best) best = q;
+      }
+      var d = Math.abs(best - V[s]);
+      if (d > worst) worst = d;
+    }
+    return worst;
+  };
+
+  globalThis.GW = GW;
+})();
+</script>
+
+<script id="ui">
+(function () {
+  if (typeof document === "undefined") return;
+  var $ = function (id) { return document.getElementById(id); };
+  var board = $('board'), bctx = board.getContext('2d');
+  var curve = $('curve'), cctx = curve.getContext('2d');
+  var GAMMA = 0.95;
+  var g = null, Q = null, V = null, star = null, ep = 0, timer = null, returns = [], demo = null, demoCell = -1, visits = null;
+
+  function n() { return parseInt($('mazeSel').value, 10); }
+  function newMaze(seed) {
+    g = GW.makeGrid(n(), seed === undefined ? (Date.now() & 0xffff) : seed);
+    Q = new Float64Array(g.n * g.n * 4); V = new Float64Array(g.n * g.n);
+    visits = new Int32Array(g.n * g.n);
+    star = GW.valueIteration(g, GAMMA);
+    ep = 0; returns = []; demo = null; demoCell = -1;
+    stop(); draw();
+  }
+  function stop() { if (timer) { clearInterval(timer); timer = null; }
+    $('btnRun').disabled = false; $('btnPause').disabled = true; }
+
+  function tickVI() {
+    for (var i = 0; i < 3; i++) {
+      var N = g.n * g.n, resid = 0;
+      for (var s = 0; s < N; s++) {
+        if (g.cells[s] === GW.WALL) continue;
+        var best = -Infinity;
+        for (var a = 0; a < 4; a++) {
+          var t = GW.step(g, s, a, GAMMA);
+          var q = t.r + (t.done ? 0 : GAMMA * V[t.ns]);
+          Q[s * 4 + a] = q;
+          if (q > best) best = q;
+        }
+        visits[s] = 1;
+        resid = Math.max(resid, Math.abs(best - V[s]));
+        V[s] = best;
+      }
+    }
+    ep += 3;
+    draw();
+  }
+  function tickQ() {
+    var alpha0 = parseFloat($('aSel').value), epsD = parseFloat($('eSel').value);
+    var r = GW.qLearning(g, (Date.now() & 0xffff) + ep, 120, alpha0, epsD, GAMMA,
+      $('rsChk').checked, 0.1, 0.2, $('optChk').checked ? 1 : 0);
+    Q = r.Q;
+    for (var i = 0; i < visits.length; i++) visits[i] += r.visits[i];
+    returns = returns.concat(r.returns);
+    ep += 120;
+    draw();
+  }
+
+  function cellColor(v) {
+    var t = Math.max(0, Math.min(1, (v + 1) / 2));
+    var r = Math.round(255 - 150 * t), gg = Math.round(238 - 60 * t), b = Math.round(226 - 40 * t);
+    return 'rgb(' + r + ',' + gg + ',' + b + ')';
+  }
+
+  function draw() {
+    if (!g) return;
+    var N = g.n, c = board.width / N;
+    bctx.clearRect(0, 0, board.width, board.height);
+    for (var s = 0; s < N * N; s++) {
+      var x = (s % N) * c, y = Math.floor(s / N) * c;
+      if (g.cells[s] === GW.WALL) { bctx.fillStyle = '#3b4557'; bctx.fillRect(x, y, c, c); continue; }
+      bctx.fillStyle = cellColor(V[s]);
+      bctx.fillRect(x, y, c, c);
+      if (s === g.goal) { bctx.fillStyle = '#1d9a5b'; bctx.fillRect(x + 3, y + 3, c - 6, c - 6); }
+      else if (g.cells[s] === GW.TRAP) {
+        bctx.strokeStyle = '#c2452f'; bctx.lineWidth = 2;
+        bctx.beginPath(); bctx.moveTo(x + 6, y + 6); bctx.lineTo(x + c - 6, y + c - 6);
+        bctx.moveTo(x + c - 6, y + 6); bctx.lineTo(x + 6, y + c - 6); bctx.stroke();
+      }
+      var a = 0;
+      for (var k = 1; k < 4; k++) if (Q[s * 4 + k] > Q[s * 4 + a]) a = k;
+      if (Q[s * 4] || Q[s * 4 + 1] || Q[s * 4 + 2] || Q[s * 4 + 3]) {
+        bctx.fillStyle = 'rgba(28,35,48,.55)';
+        bctx.font = Math.round(c * 0.55) + 'px sans-serif';
+        bctx.textAlign = 'center'; bctx.textBaseline = 'middle';
+        bctx.fillText(GW.ARROW[a], x + c / 2, y + c / 2 + 1);
+      }
+      if (s === g.start) {
+        bctx.strokeStyle = '#2456e6'; bctx.lineWidth = 2;
+        bctx.strokeRect(x + 2, y + 2, c - 4, c - 4);
+      }
+    }
+    bctx.strokeStyle = '#e3e7ee'; bctx.lineWidth = 1;
+    for (var i = 0; i <= N; i++) {
+      bctx.beginPath(); bctx.moveTo(i * c, 0); bctx.lineTo(i * c, board.height); bctx.stroke();
+      bctx.beginPath(); bctx.moveTo(0, i * c); bctx.lineTo(board.width, i * c); bctx.stroke();
+    }
+    if (demoCell >= 0) {
+      var dx = (demoCell % N) * c, dy = Math.floor(demoCell / N) * c;
+      bctx.fillStyle = '#e0912a';
+      bctx.beginPath(); bctx.arc(dx + c / 2, dy + c / 2, c * 0.28, 0, 2 * Math.PI); bctx.fill();
+    }
+    // stats
+    var gap = GW.gapToStar(g, Q, star.V, visits);
+    var path = GW.rollout(g, Q);
+    $('stEp').textContent = ep;
+    $('stGap').textContent = gap.maxGap.toFixed(4) + '（覆盖 ' + Math.round(gap.coverage * 100) + '%）';
+    $('stLen').textContent = path.length - 1 + ' 步（最优 ' + GW.bfsDist(g, g.start, g.goal) + '）';
+    if (returns.length) {
+      var tail = returns.slice(-50), sum = 0;
+      for (i = 0; i < tail.length; i++) sum += tail[i];
+      $('stRet').textContent = (sum / tail.length).toFixed(3);
+    } else $('stRet').textContent = '—';
+    drawCurve();
+  }
+
+  function drawCurve() {
+    cctx.clearRect(0, 0, curve.width, curve.height);
+    cctx.strokeStyle = '#e3e7ee'; cctx.strokeRect(0.5, 0.5, curve.width - 1, curve.height - 1);
+    if (returns.length < 10) return;
+    var w = 50, sm = [], i, j;
+    for (i = 0; i + w <= returns.length; i += Math.max(1, Math.floor(returns.length / 300))) {
+      var s2 = 0;
+      for (j = 0; j < w; j++) s2 += returns[i + j];
+      sm.push(s2 / w);
+    }
+    if (sm.length < 2) return;
+    var lo = Math.min.apply(null, sm), hi = Math.max.apply(null, sm);
+    cctx.beginPath();
+    for (i = 0; i < sm.length; i++) {
+      var cx = i / (sm.length - 1) * (curve.width - 8) + 4,
+          cy = curve.height - 8 - (sm[i] - lo) / ((hi - lo) || 1) * (curve.height - 18);
+      if (i === 0) cctx.moveTo(cx, cy); else cctx.lineTo(cx, cy);
+    }
+    cctx.strokeStyle = '#2456e6'; cctx.lineWidth = 1.6; cctx.stroke();
+  }
+
+  function runDemo() {
+    stop();
+    demo = GW.rollout(g, Q);
+    var i = 0;
+    timer = setInterval(function () {
+      demoCell = demo[i];
+      draw();
+      i++;
+      if (i >= demo.length) { clearInterval(timer); timer = null; demoCell = -1; draw(); }
+    }, 110);
+    $('btnRun').disabled = true; $('btnPause').disabled = false;
+  }
+
+  $('btnRun').onclick = function () {
+    stop();
+    timer = setInterval($('algSel').value === 'vi' ? tickVI : tickQ, 60);
+    $('btnRun').disabled = true; $('btnPause').disabled = false;
+  };
+  $('btnPause').onclick = stop;
+  $('btnNew').onclick = function () { newMaze(); };
+  $('mazeSel').onchange = function () { newMaze(); };
+  $('btnDemo').onclick = runDemo;
+  newMaze(20260914);
+})();
+</script>
+</body>
+</html>
