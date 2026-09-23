@@ -1,5 +1,12 @@
 # GridWorld RL Lab
 
+<p align="center">
+  <a href="https://github.com/CJX0712/gridworld-rl-lab/actions/workflows/ci.yml"><img src="https://github.com/CJX0712/gridworld-rl-lab/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/CJX0712/gridworld-rl-lab/releases"><img src="https://img.shields.io/github/v/release/CJX0712/gridworld-rl-lab?sort=semver" alt="release"></a>
+  <a href="https://github.com/CJX0712/gridworld-rl-lab/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CJX0712/gridworld-rl-lab" alt="license"></a>
+  <img src="https://img.shields.io/badge/author-%E6%99%A8%E6%98%9F-1f6feb" alt="author">
+</p>
+
 一个零依赖的单文件网页：在同一个网格世界里，让**值迭代**（用贝尔曼最优方程直接解出 V\*）和
 **Q-learning**（靠试错逼近）同台对比。所有算法都是手写的，不引任何库，打开 `index.html` 即用。
 
